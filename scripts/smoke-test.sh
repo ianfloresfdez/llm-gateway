@@ -28,8 +28,10 @@ for i in $(seq 1 10); do
 done
 
 echo "== metrics exposed"
+# Each replica exports only its own counters and the Service picks a pod per request,
+# so check for metrics every pod has, not for the hit (which one pod may not have served).
 metrics=$(curl -sSf "$BASE/metrics")
-grep -q 'gateway_cache_lookups_total{result="hit_exact"}' <<<"$metrics" || fail "cache metric missing"
+grep -q 'gateway_cache_lookups_total{result=' <<<"$metrics" || fail "cache metric missing"
 grep -q 'gateway_requests_total' <<<"$metrics" || fail "request metric missing"
 
 echo "smoke test passed"

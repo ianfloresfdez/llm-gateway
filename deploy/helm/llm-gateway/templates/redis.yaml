@@ -1,0 +1,36 @@
+{{- if and .Values.redis.enabled (not .Values.redis.url) }}
+{{- $labels := include "llm-gateway.componentLabels" (dict "root" . "component" "redis") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-redis
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- $labels | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          args: ["--maxmemory", "{{ .Values.redis.maxmemory }}", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+          ports: [{name: redis, containerPort: 6379}]
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-redis
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  selector: {{- $labels | nindent 4 }}
+  ports: [{name: redis, port: 6379, targetPort: redis}]
+{{- end }}

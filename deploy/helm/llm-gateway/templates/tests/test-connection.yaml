@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-test
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: smoke
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+      env:
+        - name: BASE_URL
+          value: "http://{{ include "llm-gateway.fullname" . }}:{{ .Values.service.port }}"
+      command:
+        - python
+        - -c
+        - |
+          import json, os, urllib.request
+          base = os.environ["BASE_URL"]
+          print(urllib.request.urlopen(base + "/readyz").read().decode())
+          body = {"model": "mock", "messages": [{"role": "user", "content": "helm test"}]}
+          req = urllib.request.Request(
+              base + "/v1/chat/completions", data=json.dumps(body).encode(), method="POST",
+              headers={"content-type": "application/json", "cache-control": "no-cache"})
+          answer = json.loads(urllib.request.urlopen(req).read())
+          assert answer["choices"][0]["message"]["content"], answer
+          print("ok")

@@ -1,0 +1,39 @@
+# Trimmed kube-prometheus-stack for a laptop cluster: Prometheus Operator + Prometheus + Grafana.
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30900
+  prometheusSpec:
+    scrapeInterval: 15s
+    retention: 2d
+    # Pick up ServiceMonitors from every namespace, not only the ones labelled for this release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+grafana:
+  adminPassword: admin   # local only
+  service:
+    type: NodePort
+    nodePort: 30300
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL

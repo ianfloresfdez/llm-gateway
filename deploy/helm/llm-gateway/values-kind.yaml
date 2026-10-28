@@ -1,0 +1,11 @@
+# Local kind cluster: the gateway is reachable on host port 8090 (see deploy/kind/kind-config.yaml).
+service:
+  type: NodePort
+  nodePort: 30080
+autoscaling:
+  enabled: true
+metrics:
+  serviceMonitor:
+    enabled: true
+  grafanaDashboard:
+    enabled: true

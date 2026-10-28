@@ -1,0 +1,7 @@
+# CI smoke test: no Ollama and no model download; mock provider and exact cache only.
+embeddings:
+  enabled: false
+env:
+  CACHE_MODE: exact
+  OLLAMA_BASE_URL: http://127.0.0.1:9/v1
+  LOG_LEVEL: INFO

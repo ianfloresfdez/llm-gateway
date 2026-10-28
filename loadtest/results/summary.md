@@ -1,0 +1,22 @@
+| metric | baseline | cached |
+|---|---|---|
+| requests | 358 | 958 |
+| errors | 0 | 0 |
+| duration_s | 357.9 | 344.3 |
+| throughput_rps | 1.0 | 2.78 |
+| hit_rate | 0.0 | 0.9102 |
+| hits_exact | 0 | 702 |
+| hits_semantic | 0 | 170 |
+| semantic_false_hits | 0 | 0 |
+| p50_ms | 2719.3 | 46.7 |
+| p95_ms | 3538.4 | 1306.5 |
+| p50_hit_ms | None | 46.2 |
+| p95_hit_ms | None | 56.4 |
+| p50_miss_ms | 2719.3 | 1453.9 |
+| p95_miss_ms | 3538.4 | 3465.4 |
+| mean_miss_ms | 2747.3 | 2303.3 |
+| tokens_total | 27962 | 75789 |
+| tokens_saved | 0 | 68939 |
+| reference_model | claude-haiku-5-5 | claude-haiku-5-5 |
+| cost_at_reference_usd | 0.009255 | 0.025173 |
+| cost_avoided_usd | 0.0 | 0.022886 |

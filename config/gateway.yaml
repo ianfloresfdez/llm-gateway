@@ -1,0 +1,88 @@
+# llm-gateway configuration. ${VAR:-default} is replaced from the environment.
+
+providers:
+  ollama:
+    type: openai_compatible
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+    timeout_s: 120
+    extra_body: {reasoning_effort: none}   # gemma4 thinks by default; answer directly
+  embeddings:                          # CPU embedding server (Hugging Face TEI) for the semantic cache
+    type: openai_compatible
+    base_url: ${EMBEDDINGS_BASE_URL:-http://localhost:8081/v1}
+    timeout_s: 5
+  openai:
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY        # disabled unless the variable is set
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY     # disabled unless the variable is set
+  mock:
+    type: mock
+    latency_ms: ${MOCK_LATENCY_MS:-150}
+  mock-flaky:                          # fails on purpose, to exercise retries/fallback
+    type: mock
+    latency_ms: ${MOCK_LATENCY_MS:-150}
+    failure_rate: ${MOCK_FAILURE_RATE:-0.3}
+
+# Model aliases clients send in "model". Targets are tried in order (fallback).
+# Any "provider/model" string is also accepted, e.g. "ollama/gemma4:12b".
+models:
+  local:
+    description: Local Gemma on Ollama
+    targets:
+      - {provider: ollama, model: "gemma4:12b"}
+  fast:
+    description: Hosted small model, local model as fallback
+    targets:
+      - {provider: anthropic, model: claude-haiku-5-5}
+      - {provider: openai, model: gpt-4.1-mini}
+      - {provider: ollama, model: "gemma4:12b"}
+  smart:
+    description: Hosted large model, local model as fallback
+    targets:
+      - {provider: anthropic, model: claude-sonnet-5-5}
+      - {provider: ollama, model: "gemma4:12b"}
+  demo-fallback:
+    description: Flaky mock first, healthy mock second (no LLM needed)
+    targets:
+      - {provider: mock-flaky, model: mock-1}
+      - {provider: mock, model: mock-2}
+  mock:
+    targets:
+      - {provider: mock, model: mock-1}
+
+# USD per 1M tokens. Check the providers' pricing pages before relying on these.
+pricing:
+  claude-haiku-5-5: {input: 0.10, output: 0.50}
+  claude-sonnet-5-5: {input: 2.00, output: 10.00}
+  gpt-4.1-mini: {input: 0.40, output: 1.60}
+  # Local models cost nothing per token; cache savings are valued at the reference model.
+  "gemma4:12b": {input: 0, output: 0, reference: claude-haiku-5-5}
+  mock-1: {input: 0, output: 0, reference: claude-sonnet-5-5}
+  mock-2: {input: 0, output: 0, reference: claude-sonnet-5-5}
+
+cache:
+  mode: ${CACHE_MODE:-semantic}        # off | exact | semantic
+  ttl_s: 3600
+  semantic:
+    # A separate CPU embedder: on a single GPU, asking Ollama for embeddings evicts
+    # the chat model from VRAM (measured: +13 s on the next chat call).
+    embedding_provider: ${EMBEDDING_PROVIDER:-embeddings}
+    embedding_model: BAAI/bge-small-en-v1.5
+    # bge-small: "what is a Pod?" vs "what is a Service?" scores 0.937 -> 0.92 gave false hits.
+    threshold: ${SEMANTIC_THRESHOLD:-0.96}
+    max_entries: 1000
+
+retries:
+  max_attempts: 2
+  backoff_base_s: 0.2
+
+circuit_breaker:
+  failure_threshold: 5
+  cooldown_s: 30
+
+# Per API key name (see GATEWAY_API_KEYS). "default" covers everyone else.
+limits:
+  default: {rpm: 600, tokens_per_day: 2000000}
+  demo: {rpm: 10, tokens_per_day: 20000}

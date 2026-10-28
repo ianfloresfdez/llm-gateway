@@ -1,0 +1,12 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-dashboard
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  llm-gateway.json: |-
+{{ .Files.Get "dashboards/llm-gateway.json" | indent 4 }}
+{{- end }}

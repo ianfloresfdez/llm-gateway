@@ -1,0 +1,10 @@
+.venv/
+.tools/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+loadtest/results/raw/
+.env
+kind-up.log
+bench.log

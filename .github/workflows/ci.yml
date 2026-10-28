@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/llm-gateway
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.1
+      - run: helm lint deploy/helm/llm-gateway
+      - run: helm lint deploy/helm/llm-gateway -f deploy/helm/llm-gateway/values-kind.yaml
+      - name: Render manifests
+        run: helm template llm-gateway deploy/helm/llm-gateway -f deploy/helm/llm-gateway/values-kind.yaml > /dev/null
+
+  # Build the image once, smoke-test it on a throwaway kind cluster, then (on main) publish it.
+  build-and-e2e:
+    needs: [lint-test, helm-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: llm-gateway:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+          config: deploy/kind/kind-config.yaml
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.3.1
+      - name: Load image into kind
+        run: kind load docker-image llm-gateway:ci --name ci
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install llm-gateway deploy/helm/llm-gateway \
+            --namespace llm --create-namespace \
+            -f deploy/helm/llm-gateway/values-ci.yaml \
+            --set image.tag=ci --set service.type=NodePort --set service.nodePort=30080 \
+            --wait --timeout 5m
+      - name: helm test
+        run: helm test llm-gateway -n llm --logs
+      - name: Smoke test through the NodePort
+        run: scripts/smoke-test.sh http://localhost:8090
+      - name: Debug info on failure
+        if: failure()
+        run: |
+          kubectl get all -A
+          kubectl -n llm describe pods
+          kubectl -n llm logs -l app.kubernetes.io/component=gateway --tail=100
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag llm-gateway:ci "$IMAGE:${GITHUB_SHA::7}"
+          docker tag llm-gateway:ci "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+          docker push "$IMAGE:latest"

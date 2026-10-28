@@ -1,0 +1,10 @@
+llm-gateway {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+{{- if eq .Values.service.type "NodePort" }}
+
+NodePort service on port {{ .Values.service.nodePort }} (host port 8090 with deploy/kind/kind-config.yaml).
+{{- else }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "llm-gateway.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}
+
+Smoke test:  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

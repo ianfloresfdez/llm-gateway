@@ -1,0 +1,8 @@
+.venv
+.tools
+.git
+tests
+loadtest
+docs
+deploy
+**/__pycache__

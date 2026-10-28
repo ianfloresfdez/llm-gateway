@@ -1,0 +1,28 @@
+{{- $env := deepCopy .Values.env -}}
+{{- if and (not .Values.embeddings.enabled) (eq (toString $env.CACHE_MODE) "semantic") -}}
+{{- $_ := set $env "CACHE_MODE" "exact" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-env
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+data:
+  REDIS_URL: {{ include "llm-gateway.redisUrl" . | quote }}
+  {{- if .Values.embeddings.enabled }}
+  EMBEDDINGS_BASE_URL: "http://{{ include "llm-gateway.fullname" . }}-embeddings/v1"
+  {{- end }}
+  {{- range $k, $v := $env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- if .Values.configOverride }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-config
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+data:
+  gateway.yaml: |
+    {{- .Values.configOverride | nindent 4 }}
+{{- end }}

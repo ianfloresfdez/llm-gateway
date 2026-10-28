@@ -1,0 +1,45 @@
+# Local stack: gateway + Redis + Prometheus + Grafana. Ollama runs on the host.
+services:
+  gateway:
+    build: .
+    image: llm-gateway:dev
+    ports: ["8080:8080"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      EMBEDDINGS_BASE_URL: http://embeddings:80/v1
+      CACHE_MODE: ${CACHE_MODE:-semantic}
+      GATEWAY_API_KEYS: ${GATEWAY_API_KEYS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [redis, embeddings]
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+    volumes: ["hf-cache:/data"]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./deploy/compose/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/helm/llm-gateway/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  hf-cache:

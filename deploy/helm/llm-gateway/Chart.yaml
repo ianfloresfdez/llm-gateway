@@ -1,0 +1,6 @@
+apiVersion: v2
+name: llm-gateway
+description: OpenAI-compatible LLM gateway with routing, fallback, caching, rate limits and cost metrics
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

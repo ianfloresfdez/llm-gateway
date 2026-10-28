@@ -1,0 +1,39 @@
+{{- if .Values.embeddings.enabled }}
+{{- $labels := include "llm-gateway.componentLabels" (dict "root" . "component" "embeddings") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-embeddings
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- $labels | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: tei
+          image: {{ .Values.embeddings.image }}
+          args: ["--model-id", "{{ .Values.embeddings.model }}"]
+          ports: [{name: http, containerPort: 80}]
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 60   # the first start downloads the model
+          resources: {{- toYaml .Values.embeddings.resources | nindent 12 }}
+          volumeMounts: [{name: models, mountPath: /data}]
+      volumes:
+        - name: models
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-embeddings
+  labels: {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  selector: {{- $labels | nindent 4 }}
+  ports: [{name: http, port: 80, targetPort: http}]
+{{- end }}

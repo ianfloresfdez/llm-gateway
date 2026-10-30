@@ -7,7 +7,7 @@ Any OpenAI client works by changing its base URL:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8090/v1", api_key="sk-team-a")
+client = OpenAI(base_url="http://localhost:8090/v1", api_key="sk-team-a")  # kind; 8080 with Compose
 client.chat.completions.create(model="local", messages=[{"role": "user", "content": "What is a Pod?"}])
 ```
 
@@ -97,6 +97,8 @@ ruff check . && ruff format --check . && pytest -q
 GATEWAY_CONFIG=config/gateway.yaml uvicorn app.main:app --port 8080
 ```
 
+Without a Redis on `localhost:6379` the gateway still answers (cache and limits fail open, `/readyz` reports `"redis": false`). Compose and kind publish their ports on `127.0.0.1` only.
+
 ## CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
@@ -166,7 +168,9 @@ Grafana dashboard provisioned by the chart (kube-prometheus-stack in kind). Pane
 ## Limitations and next steps
 
 - Anthropic responses are not streamed token by token (the full answer is sent as one chunk); OpenAI-compatible providers stream natively.
-- Only text content is supported; tool calls and images are not translated between provider formats.
+- Only text content is supported; tool calls and images are not translated between provider formats. Request fields the gateway does not know (`tools`, `response_format`, `n`, ...) are dropped, not rejected.
+- Auth is off when `GATEWAY_API_KEYS` is empty (the gateway logs a warning if a paid provider is enabled). With auth on, any key can still address `provider/model` directly, so it can use any model of an enabled provider, not only the aliases.
+- The cache is shared by all API keys: a semantic hit can return an answer generated for another key's similar prompt. Multi-tenant deployments should scope it per key.
 - Semantic search is a brute-force scan over the most recent 1,000 vectors per scope in Redis; beyond that, a vector index (Redis Stack, pgvector) would be needed.
 - Not included: Ingress/TLS, NetworkPolicies, Redis high availability, autoscaling on custom metrics (in-flight requests) instead of CPU, and OpenTelemetry traces.
 - Prices in `config/gateway.yaml` are examples; check each provider's pricing page before relying on cost figures.

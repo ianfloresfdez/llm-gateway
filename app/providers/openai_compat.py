@@ -60,11 +60,17 @@ class OpenAICompatibleProvider(Provider):
             raise ProviderError(f"{self.name}: {type(e).__name__}", retryable=True) from e
         if r.status_code >= 400:
             raise classify_status(r.status_code, f"{self.name}: HTTP {r.status_code} {r.text[:200]}")
-        return r.json()
+        try:
+            return r.json()
+        except ValueError as e:  # e.g. an HTML error page from a proxy with status 200
+            raise ProviderError(f"{self.name}: invalid JSON response", retryable=True) from e
 
     async def complete(self, req: ChatRequest, model: str) -> Completion:
         data = await self._post("/chat/completions", self._body(req, model))
-        choice = data["choices"][0]
+        try:
+            choice = data["choices"][0]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ProviderError(f"{self.name}: response without choices", retryable=True) from e
         usage = data.get("usage") or {}
         return Completion(
             content=choice["message"].get("content") or "",

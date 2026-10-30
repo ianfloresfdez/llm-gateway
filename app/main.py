@@ -60,7 +60,13 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if gateway is None:
-            redis = Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+            # Without timeouts a blackholed Redis would hang every request instead of failing open.
+            timeout = float(os.environ.get("REDIS_TIMEOUT_S", "0.5"))
+            redis = Redis.from_url(
+                os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+                socket_connect_timeout=timeout,
+                socket_timeout=timeout,
+            )
             app.state.gw = build_gateway(load_config(), redis)
         else:
             app.state.gw = gateway

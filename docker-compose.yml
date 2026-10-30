@@ -3,7 +3,7 @@ services:
   gateway:
     build: .
     image: llm-gateway:dev
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]   # localhost only: auth is off unless GATEWAY_API_KEYS is set
     environment:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
@@ -26,13 +26,13 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.2.1
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]
     volumes:
       - ./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
     image: grafana/grafana:11.5.2
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer

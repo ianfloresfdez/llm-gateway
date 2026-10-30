@@ -41,6 +41,10 @@ class Gateway:
 def build_gateway(cfg: GatewayConfig, redis: Redis, providers: dict[str, Provider] | None = None) -> Gateway:
     providers = build_providers(cfg) if providers is None else providers
     embedder = providers.get(cfg.cache.semantic.embedding_provider)
+    api_keys = load_api_keys()
+    paid = sorted(n for n in providers if n in cfg.providers and cfg.providers[n].api_key_env)
+    if not api_keys and paid:
+        log.warning("GATEWAY_API_KEYS is empty: anyone who can reach the gateway can spend on %s", paid)
     return Gateway(
         cfg=cfg,
         providers=providers,
@@ -48,7 +52,7 @@ def build_gateway(cfg: GatewayConfig, redis: Redis, providers: dict[str, Provide
         cache=ResponseCache(redis, cfg.cache, embedder),
         limiter=RateLimiter(redis),
         redis=redis,
-        api_keys=load_api_keys(),
+        api_keys=api_keys,
     )
 
 

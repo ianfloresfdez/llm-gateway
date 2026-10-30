@@ -47,10 +47,12 @@ def make_providers(cfg: GatewayConfig) -> dict:
 def make_client(monkeypatch):
     clients = []
 
-    def _make(cfg: GatewayConfig | None = None, providers: dict | None = None, api_keys: str = ""):
+    def _make(
+        cfg: GatewayConfig | None = None, providers: dict | None = None, api_keys: str = "", redis=None
+    ):
         monkeypatch.setenv("GATEWAY_API_KEYS", api_keys)
         cfg = cfg or make_config()
-        gateway = build_gateway(cfg, FakeAsyncRedis(), providers or make_providers(cfg))
+        gateway = build_gateway(cfg, redis or FakeAsyncRedis(), providers or make_providers(cfg))
         client = TestClient(create_app(gateway))
         client.__enter__()
         clients.append(client)

@@ -99,8 +99,8 @@ class Router:
                     errors.append(str(e))
                     if not e.fallback:
                         raise AllTargetsFailed(errors, status=e.status) from e
-                    if not e.retryable:
-                        break
+                    if not e.retryable or attempt == self.cfg.retries.max_attempts - 1:
+                        break  # no point sleeping before moving on to the next target
                     await asyncio.sleep(self.cfg.retries.backoff_base_s * 2**attempt)
                     continue
                 metrics.UPSTREAM_LATENCY.labels(target.provider, target.model).observe(

@@ -1,7 +1,9 @@
-"""FastAPI app: an OpenAI-compatible /v1/chat/completions in front of several providers."""
+"""FastAPI app: OpenAI-compatible /v1/chat/completions and Anthropic-compatible /v1/messages
+in front of several providers."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,7 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
 
-from app import metrics
+from app import anthropic_api, metrics
 from app.cache import ResponseCache
 from app.config import GatewayConfig, load_api_keys, load_config
 from app.pricing import actual_cost, avoided_cost
@@ -25,6 +27,7 @@ from app.router import AllTargetsFailed, Router, UnknownModel
 from app.schemas import ChatRequest, Completion, new_completion_id, to_openai_chunk, to_openai_response
 
 log = logging.getLogger("llm_gateway")
+PING_EVERY_S = 10.0  # keep-alive for Anthropic streams while a slow local model works
 
 
 @dataclass
@@ -83,8 +86,9 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
     def authenticate(g: Gateway, request: Request) -> str:
         if not g.api_keys:
             return "anonymous"
+        # OpenAI clients send a Bearer token; Anthropic clients may send x-api-key instead.
         header = request.headers.get("authorization", "")
-        token = header.removeprefix("Bearer ").strip()
+        token = header.removeprefix("Bearer ").strip() or request.headers.get("x-api-key", "").strip()
         name = g.api_keys.get(token)
         if not name:
             raise HTTPException(401, detail={"error": {"message": "invalid API key", "type": "auth_error"}})
@@ -141,7 +145,8 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
                 status_code=404,
             )
 
-        bypass = "no-cache" in request.headers.get("cache-control", "")
+        # Agent turns with tools are never cached: the same prompt must re-run the tool loop.
+        bypass = "no-cache" in request.headers.get("cache-control", "") or body.uses_tools
         if bypass:
             cache_result, cached, query_vec = "bypass", None, None
         else:
@@ -166,6 +171,68 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
             await g.cache.set(body, completion, query_vec)
         await g.limiter.record_tokens(key_name, completion.total_tokens)
         return ctx.finish(completion, attempts)
+
+    def resolve_anthropic_model(g: Gateway, model: str) -> str:
+        """Anthropic clients send names like claude-opus-5-5. Known aliases and provider/model
+        strings are used as-is; anything else goes to ANTHROPIC_FALLBACK_MODEL (default "agent")."""
+        try:
+            g.router.targets(model)
+            return model
+        except UnknownModel:
+            fallback = os.environ.get("ANTHROPIC_FALLBACK_MODEL", "agent")
+            g.router.targets(fallback)  # raises UnknownModel if the fallback alias is missing too
+            return fallback
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request):
+        authenticate(gw(request), request)
+        return {"input_tokens": anthropic_api.estimate_tokens(await request.json())}
+
+    @app.post("/v1/messages")
+    async def messages(request: Request):
+        g = gw(request)
+        start = time.perf_counter()
+        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        key_name = authenticate(g, request)
+        raw = await request.json()
+        asked = str(raw.get("model", ""))
+        try:
+            body = anthropic_api.to_chat_request(raw, resolve_anthropic_model(g, asked))
+        except UnknownModel:
+            return JSONResponse(anthropic_api.error_body(f"unknown model {asked!r}", "not_found_error"), 404)
+        except (ValueError, KeyError, TypeError) as e:
+            return JSONResponse(
+                anthropic_api.error_body(f"invalid request: {e}", "invalid_request_error"), 400
+            )
+
+        decision = await g.limiter.check(key_name, g.cfg.limits_for(key_name))
+        if not decision.allowed:
+            metrics.RATE_LIMITED.labels(key_name, decision.reason).inc()
+            return JSONResponse(
+                anthropic_api.error_body(f"rate limit exceeded: {decision.reason}", "rate_limit_error"),
+                status_code=429,
+                headers={"Retry-After": str(decision.retry_after_s), "x-request-id": request_id},
+            )
+
+        ctx = RequestContext(g, body, key_name, request_id, start, "bypass")
+        message_id = anthropic_api.new_message_id()
+        if raw.get("stream"):
+            return StreamingResponse(
+                ctx.anthropic_stream(asked, message_id),
+                media_type="text/event-stream",
+                headers=ctx.headers(None),
+            )
+        try:
+            completion, attempts = await g.router.complete(body)
+        except AllTargetsFailed as e:
+            ctx.fail(e)
+            status = e.status if 400 <= e.status < 500 else 502
+            return JSONResponse(anthropic_api.error_body(str(e)), status_code=status)
+        ctx.account(completion, attempts)
+        await g.limiter.record_tokens(key_name, completion.total_tokens)
+        return JSONResponse(
+            anthropic_api.to_message(completion, asked, message_id), headers=ctx.headers(completion)
+        )
 
     return app
 
@@ -283,6 +350,27 @@ class RequestContext:
             to_openai_chunk(self.req.model, self.completion_id, {}, final.finish_reason if final else "stop")
         )
         yield "data: [DONE]\n\n"
+
+    async def anthropic_stream(self, model: str, message_id: str):
+        """Anthropic SSE for a completion computed in one go. Local models can take minutes on a
+        long agent prompt, so pings keep the connection alive until the answer is ready."""
+        yield anthropic_api.message_start(model, message_id)
+        task = asyncio.create_task(self.g.router.complete(self.req))
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=PING_EVERY_S)
+            if done:
+                break
+            yield anthropic_api.sse("ping", {"type": "ping"})
+        try:
+            completion, attempts = task.result()
+        except AllTargetsFailed as e:
+            self.fail(e)
+            yield anthropic_api.sse("error", anthropic_api.error_body(str(e)))
+            return
+        self.account(completion, attempts)
+        await self.g.limiter.record_tokens(self.key_name, completion.total_tokens)
+        for event in anthropic_api.message_events(completion):
+            yield event
 
 
 def _configure_logging() -> None:

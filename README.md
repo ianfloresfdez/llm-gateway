@@ -99,6 +99,36 @@ GATEWAY_CONFIG=config/gateway.yaml uvicorn app.main:app --port 8080
 
 Without a Redis on `localhost:6379` the gateway still answers (cache and limits fail open, `/readyz` reports `"redis": false`). Compose and kind publish their ports on `127.0.0.1` only.
 
+## Anthropic API and coding agents
+
+Besides the OpenAI format the gateway serves Anthropic's **`POST /v1/messages`** (plus
+`/v1/messages/count_tokens`), so clients that only speak Anthropic's wire format can use any
+provider behind it, including the local model. This is what lets
+[jack](https://github.com/ianfloresfdez/jack) run its Claude Agent SDK pipeline against a local
+model: point the SDK at the gateway the same way it points at a hosted Anthropic-compatible
+gateway.
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # the Claude Agent SDK / Claude Code use this
+ANTHROPIC_AUTH_TOKEN=<gateway key>          # or any value when GATEWAY_API_KEYS is empty
+```
+
+- **Tool use is translated both ways**: `tool_use` / `tool_result` blocks become OpenAI
+  `tool_calls` / `role: tool` messages for the upstream model and back. Requests with tools are
+  never cached, since an agent loop must run again.
+- **Model names**: known aliases and `provider/model` strings are used as they are; any other
+  name (`claude-opus-5-5`, `claude-haiku-4-5`...) goes to `ANTHROPIC_FALLBACK_MODEL`, by default
+  the `agent` alias: `gemma4-64k` on Ollama (set `AGENT_LOCAL_MODEL` to change it), with hosted
+  Claude as fallback when `ANTHROPIC_API_KEY` is set.
+- **Streaming**: the answer is computed in one go and sent as Anthropic SSE events, with `ping`
+  events every 10 s so a long local prompt does not look like a dead connection. Ollama's timeout
+  is `OLLAMA_TIMEOUT_S` (600 s by default) because agent prompts carry tools and whole files.
+- Auth accepts `Authorization: Bearer` and `x-api-key`.
+
+Measured on an RX 6800 with `gemma4-64k`: a request with one tool came back as a correct
+`tool_use` block in 14 s (model already loaded). Expect agent runs to be much slower than with
+hosted models, and less reliable: a 12B local model is fine for demos and simple tickets.
+
 ## CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):

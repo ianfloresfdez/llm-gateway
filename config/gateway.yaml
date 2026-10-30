@@ -4,7 +4,8 @@ providers:
   ollama:
     type: openai_compatible
     base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
-    timeout_s: 120
+    # Agent turns send long prompts (tools + files): a local model can take minutes to read them.
+    timeout_s: ${OLLAMA_TIMEOUT_S:-600}
     extra_body: {reasoning_effort: none}   # gemma4 thinks by default; answer directly
   embeddings:                          # CPU embedding server (Hugging Face TEI) for the semantic cache
     type: openai_compatible
@@ -43,6 +44,13 @@ models:
     targets:
       - {provider: anthropic, model: claude-sonnet-5-5}
       - {provider: ollama, model: "gemma4:12b"}
+  agent:
+    description: >-
+      Coding agents over /v1/messages (Claude Agent SDK, jack). Unknown claude-* names land here
+      (ANTHROPIC_FALLBACK_MODEL). Long-context local model first, hosted Claude as fallback.
+    targets:
+      - {provider: ollama, model: "${AGENT_LOCAL_MODEL:-gemma4-64k}"}
+      - {provider: anthropic, model: claude-sonnet-5-5}
   demo-fallback:
     description: Flaky mock first, healthy mock second (no LLM needed)
     targets:
@@ -59,6 +67,7 @@ pricing:
   gpt-4.1-mini: {input: 0.40, output: 1.60}
   # Local models cost nothing per token; cache savings are valued at the reference model.
   "gemma4:12b": {input: 0, output: 0, reference: claude-haiku-5-5}
+  "gemma4-64k": {input: 0, output: 0, reference: claude-sonnet-5-5}
   mock-1: {input: 0, output: 0, reference: claude-sonnet-5-5}
   mock-2: {input: 0, output: 0, reference: claude-sonnet-5-5}
 

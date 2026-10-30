@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -36,6 +36,13 @@ class ChatRequest(BaseModel):
     stop: str | list[str] | None = None
     stream: bool = False
     user: str | None = None
+    # Tool calling (OpenAI shape); requests with tools bypass the cache.
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any = None
+
+    @property
+    def uses_tools(self) -> bool:
+        return bool(self.tools) or any(m.role == "tool" for m in self.messages)
 
     @property
     def output_limit(self) -> int | None:
@@ -57,6 +64,8 @@ class Completion:
     finish_reason: str
     provider: str
     upstream_model: str
+    # OpenAI-shaped tool calls requested by the model (empty for plain answers)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:
@@ -76,7 +85,8 @@ def to_openai_response(c: Completion, model: str, completion_id: str) -> dict[st
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": c.content},
+                "message": {"role": "assistant", "content": c.content or (None if c.tool_calls else "")}
+                | ({"tool_calls": c.tool_calls} if c.tool_calls else {}),
                 "finish_reason": c.finish_reason,
             }
         ],

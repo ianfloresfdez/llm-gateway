@@ -38,6 +38,14 @@ class AnthropicProvider(Provider):
         self._client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=0, timeout=timeout_s)
 
     async def complete(self, req: ChatRequest, model: str) -> Completion:
+        if req.uses_tools:
+            # Not translated on this path yet: let the router try the next target.
+            raise ProviderError(
+                f"{self.name}: tool calling is not supported by this provider",
+                status=400,
+                retryable=False,
+                fallback=True,
+            )
         try:
             msg = await self._client.messages.create(**to_messages_params(req, model))
         except anthropic.APITimeoutError as e:

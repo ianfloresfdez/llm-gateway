@@ -221,3 +221,39 @@ async def test_openai_provider_forwards_tools_and_parses_tool_calls():
     assert seen["messages"][3] == {"role": "tool", "content": "# demo", "tool_call_id": "toolu_1"}
     assert c.tool_calls[0]["id"] == "call_7" and c.content == ""
     await p.aclose()
+
+
+def test_models_list_reports_alias_targets(agent_client):
+    client, _ = agent_client
+    data = client.get("/v1/models").json()
+    agent = next(m for m in data["data"] if m["id"] == "agent")
+    assert agent["targets"] == ["agentish/local-agent"] and agent["available"] == ["agentish/local-agent"]
+    assert data["anthropic_fallback"] == "agent"
+
+
+async def test_stream_cancels_the_upstream_call_when_the_client_leaves(monkeypatch):
+    import asyncio
+
+    from app import main
+    from tests.conftest import make_config
+
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    class SlowRouter:
+        async def complete(self, req):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    gw = type("G", (), {"router": SlowRouter(), "cfg": make_config()})()
+    ctx = main.RequestContext(gw, ChatRequest(model="agent", messages=[]), "k", "rid", 0.0, "bypass")
+    monkeypatch.setattr(main, "PING_EVERY_S", 0.01)
+    stream = ctx.anthropic_stream("claude-x", "msg_1")
+    assert "message_start" in await stream.__anext__()
+    assert "ping" in await stream.__anext__()  # the upstream call is running by now
+    assert started.is_set()
+    await stream.aclose()  # what Starlette does when the client disconnects
+    await asyncio.wait_for(cancelled.wait(), 1)

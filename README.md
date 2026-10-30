@@ -125,9 +125,19 @@ ANTHROPIC_AUTH_TOKEN=<gateway key>          # or any value when GATEWAY_API_KEYS
   is `OLLAMA_TIMEOUT_S` (600 s by default) because agent prompts carry tools and whole files.
 - Auth accepts `Authorization: Bearer` and `x-api-key`.
 
-Measured on an RX 6800 with `gemma4-64k`: a request with one tool came back as a correct
-`tool_use` block in 14 s (model already loaded). Expect agent runs to be much slower than with
-hosted models, and less reliable: a 12B local model is fine for demos and simple tickets.
+Which local model for agents? Same task through the Claude Agent SDK (list files with Glob,
+read one, answer a question about it; ~13k-token prompts), RX 6800, Ollama on Vulkan:
+
+| Model (`agent` target) | Total | Turns | Correct |
+|---|---|---|---|
+| `gpt-oss-64k` (gpt-oss:20b, MoE, reasoning `low`) | **86 s** | 27 / 29 / 30 s | yes |
+| `gemma4-64k` (gemma4:12b, dense) | 284 s | 120 / 134 / 30 s | yes |
+| `qwen3-40k` (qwen3:14b, dense) | > 13 min, stopped | 340 / 430 s ... | - |
+
+`gpt-oss` only activates ~3.6B parameters per token, so it reads long agent prompts far faster;
+it is the default (`AGENT_LOCAL_MODEL`, provider `ollama-reasoning` because gpt-oss cannot turn
+reasoning off). Local agent runs are still much slower and less reliable than hosted models: fine
+for demos and small tickets.
 
 ## CI/CD
 

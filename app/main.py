@@ -118,7 +118,22 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
         g = gw(request)
         return {
             "object": "list",
-            "data": [{"id": name, "object": "model", "owned_by": "llm-gateway"} for name in g.cfg.models],
+            "data": [
+                {
+                    "id": name,
+                    "object": "model",
+                    "owned_by": "llm-gateway",
+                    # Extra (not in OpenAI's schema): where the alias goes, in fallback order, and
+                    # which targets are usable right now (provider configured)
+                    "targets": [f"{t.provider}/{t.model}" for t in route.targets],
+                    "available": [
+                        f"{t.provider}/{t.model}" for t in route.targets if t.provider in g.providers
+                    ],
+                }
+                for name, route in g.cfg.models.items()
+            ],
+            # Which alias Anthropic clients (claude-* names) end up on
+            "anthropic_fallback": os.environ.get("ANTHROPIC_FALLBACK_MODEL", "agent"),
         }
 
     @app.post("/v1/chat/completions")
@@ -356,11 +371,17 @@ class RequestContext:
         long agent prompt, so pings keep the connection alive until the answer is ready."""
         yield anthropic_api.message_start(model, message_id)
         task = asyncio.create_task(self.g.router.complete(self.req))
-        while True:
-            done, _ = await asyncio.wait({task}, timeout=PING_EVERY_S)
-            if done:
-                break
-            yield anthropic_api.sse("ping", {"type": "ping"})
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=PING_EVERY_S)
+                if done:
+                    break
+                yield anthropic_api.sse("ping", {"type": "ping"})
+        finally:
+            # Client gone (closed or cancelled): stop the upstream call too, or a local model keeps
+            # the GPU busy for minutes answering nobody
+            if not task.done():
+                task.cancel()
         try:
             completion, attempts = task.result()
         except AllTargetsFailed as e:

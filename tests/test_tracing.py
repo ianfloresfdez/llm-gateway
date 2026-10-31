@@ -1,11 +1,13 @@
-"""Langfuse traces: OTLP spans grouped by the client's headers, the prompt is trimmed, nothing happens when off."""
+"""Langfuse traces: OTLP spans grouped by client headers, a trimmed prompt, and nothing when off."""
+
 from app import tracing
 from app.schemas import ChatRequest, Completion
 
 
 def req(n=10):
     msgs = [{"role": "system", "content": "S" * 10_000}] + [
-        {"role": "user" if i % 2 else "assistant", "content": f"turn {i}"} for i in range(n)]
+        {"role": "user" if i % 2 else "assistant", "content": f"turn {i}"} for i in range(n)
+    ]
     return ChatRequest(model="agent", messages=msgs)
 
 
@@ -14,9 +16,18 @@ def attrs(span):
 
 
 def test_one_trace_per_session_and_stage_as_a_generation():
-    meta = tracing.meta_from({"x-trace-session": "run1", "x-trace-name": "implement · SHOP-1", "x-trace-tags": "jack, bench"})
-    c = Completion(content="", prompt_tokens=100, completion_tokens=5, finish_reason="tool_calls",
-                   provider="ollama", upstream_model="qwen3-coder-64k", tool_calls=[{"function": {"name": "Read"}}])
+    meta = tracing.meta_from(
+        {"x-trace-session": "run1", "x-trace-name": "implement · SHOP-1", "x-trace-tags": "jack, bench"}
+    )
+    c = Completion(
+        content="",
+        prompt_tokens=100,
+        completion_tokens=5,
+        finish_reason="tool_calls",
+        provider="ollama",
+        upstream_model="qwen3-coder-64k",
+        tool_calls=[{"function": {"name": "Read"}}],
+    )
     a = tracing.span(meta, "r1", req(), c, 2.0, 0.0)
     b = tracing.span(meta, "r2", req(), c, 2.0, 0.0)
     assert a["traceId"] == b["traceId"] and len(a["traceId"]) == 32 and a["spanId"] != b["spanId"]

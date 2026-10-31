@@ -1,9 +1,11 @@
-"""Optional traces of every completion to Langfuse (self-hosted or cloud), as OpenTelemetry (OTLP/HTTP JSON) spans, without an SDK.
+"""Optional traces of every completion to Langfuse (self-hosted or cloud).
+
+Sent as OpenTelemetry spans (OTLP/HTTP JSON) built here, without an SDK.
 
 Off unless LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are set. Each completion becomes a
-Langfuse "generation" (model, prompt tail, answer or tool calls, tokens, latency, cost); clients group them with
-headers: X-Trace-Session (e.g. a jack run id), X-Trace-Name (e.g. "implement · SHOP-103") and X-Trace-Tags
-(comma-separated). Sending happens in the background and never fails or slows down a request.
+Langfuse "generation" (model, prompt tail, answer or tool calls, tokens, latency, cost); clients group
+them with headers: X-Trace-Session (e.g. a jack run id), X-Trace-Name (e.g. "implement · SHOP-103")
+and X-Trace-Tags (comma-separated). Sending happens in the background and never fails or slows down a request.
 """
 
 from __future__ import annotations
@@ -13,8 +15,8 @@ import hashlib
 import json
 import logging
 import os
-import uuid
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -44,7 +46,11 @@ def enabled() -> bool:
 def meta_from(headers: Any) -> dict[str, Any]:
     """Grouping headers sent by the client (Claude Code forwards them with ANTHROPIC_CUSTOM_HEADERS)."""
     tags = [t.strip() for t in headers.get("x-trace-tags", "").split(",") if t.strip()]
-    return {"session": headers.get("x-trace-session", "").strip(), "name": headers.get("x-trace-name", "").strip(), "tags": tags}
+    return {
+        "session": headers.get("x-trace-session", "").strip(),
+        "name": headers.get("x-trace-name", "").strip(),
+        "tags": tags,
+    }
 
 
 def _clip(text: Any, limit: int) -> Any:
@@ -83,9 +89,16 @@ def _attr(key: str, value: Any) -> dict[str, Any] | None:
     return {"key": key, "value": {"stringValue": value}}
 
 
-def span(meta: dict[str, Any], request_id: str, req: ChatRequest, c: Completion | None, latency_s: float,
-         cost: float, error: str | None = None) -> dict[str, Any]:
-    """One completion as an OTLP span that Langfuse reads as a "generation" (langfuse.* / gen_ai.* attributes)."""
+def span(
+    meta: dict[str, Any],
+    request_id: str,
+    req: ChatRequest,
+    c: Completion | None,
+    latency_s: float,
+    cost: float,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """One completion as an OTLP span that Langfuse reads as a "generation" (langfuse.*, gen_ai.* attrs)."""
     end = time.time_ns()
     start = end - int(latency_s * 1e9)
     session = meta.get("session") or None
@@ -113,18 +126,26 @@ def span(meta: dict[str, Any], request_id: str, req: ChatRequest, c: Completion 
         _attr("gen_ai.usage.cost", cost if c else None),
     ]
     return {
-        "traceId": trace_id, "spanId": uuid.uuid4().hex[:16], "name": name, "kind": 3,
-        "startTimeUnixNano": str(start), "endTimeUnixNano": str(end),
+        "traceId": trace_id,
+        "spanId": uuid.uuid4().hex[:16],
+        "name": name,
+        "kind": 3,
+        "startTimeUnixNano": str(start),
+        "endTimeUnixNano": str(end),
         "attributes": [a for a in attrs if a],
         "status": {"code": 2, "message": error} if error else {"code": 1},
     }
 
 
 def otlp(spans: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"resourceSpans": [{
-        "resource": {"attributes": [_attr("service.name", "llm-gateway")]},
-        "scopeSpans": [{"scope": {"name": "llm-gateway"}, "spans": spans}],
-    }]}
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": [_attr("service.name", "llm-gateway")]},
+                "scopeSpans": [{"scope": {"name": "llm-gateway"}, "spans": spans}],
+            }
+        ]
+    }
 
 
 async def _send(payload: dict[str, Any]) -> None:
@@ -134,21 +155,34 @@ async def _send(payload: dict[str, Any]) -> None:
     base, pk, sk = cfg
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(f"{base}/api/public/otel/v1/traces", auth=(pk, sk), content=json.dumps(payload, default=str),
-                                  headers={"Content-Type": "application/json"})
+            r = await client.post(
+                f"{base}/api/public/otel/v1/traces",
+                auth=(pk, sk),
+                content=json.dumps(payload, default=str),
+                headers={"Content-Type": "application/json"},
+            )
             if r.status_code >= 300:
                 log.warning("langfuse otel → %s: %s", r.status_code, r.text[:200])
     except httpx.HTTPError as e:
         log.warning("langfuse unreachable: %s", e)
 
 
-def record(meta: dict[str, Any], request_id: str, req: ChatRequest, c: Completion | None, latency_s: float,
-           cost: float = 0.0, error: str | None = None) -> None:
+def record(
+    meta: dict[str, Any],
+    request_id: str,
+    req: ChatRequest,
+    c: Completion | None,
+    latency_s: float,
+    cost: float = 0.0,
+    error: str | None = None,
+) -> None:
     """Fire and forget: schedules the upload on the running loop."""
     if not enabled():
         return
     try:
-        task = asyncio.get_running_loop().create_task(_send(otlp([span(meta, request_id, req, c, latency_s, cost, error)])))
+        task = asyncio.get_running_loop().create_task(
+            _send(otlp([span(meta, request_id, req, c, latency_s, cost, error)]))
+        )
     except RuntimeError:  # no running loop (sync tests): skip
         return
     _pending.add(task)

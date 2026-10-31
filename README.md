@@ -139,6 +139,16 @@ it is the default (`AGENT_LOCAL_MODEL`, provider `ollama-reasoning` because gpt-
 reasoning off). Local agent runs are still much slower and less reliable than hosted models: fine
 for demos and small tickets.
 
+## Traces in Langfuse
+
+Set `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (self-hosted Langfuse or cloud) and every
+completion is sent as an OpenTelemetry span (OTLP/HTTP JSON, no SDK) that Langfuse shows as a *generation*: model,
+the system prompt head plus the last turns, the answer or tool calls, tokens, latency, cost, and errors. Uploads run
+in the background and never fail or slow a request. Clients group calls with headers: `X-Trace-Session` (jack sends
+its run id), `X-Trace-Name` (stage and ticket) and `X-Trace-Tags`. Claude Code forwards them through
+`ANTHROPIC_CUSTOM_HEADERS`. This is how a local model that loops in one stage gets diagnosed: open the run's session
+and read its last turns.
+
 ## CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):

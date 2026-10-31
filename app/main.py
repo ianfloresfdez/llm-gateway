@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis
 
-from app import anthropic_api, metrics
+from app import anthropic_api, metrics, tracing
 from app.cache import ResponseCache
 from app.config import GatewayConfig, load_api_keys, load_config
 from app.pricing import actual_cost, avoided_cost
@@ -168,7 +168,7 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
             cache_result, cached, query_vec = await g.cache.get(body)
         metrics.CACHE_LOOKUPS.labels(cache_result).inc()
 
-        ctx = RequestContext(g, body, key_name, request_id, start, cache_result)
+        ctx = RequestContext(g, body, key_name, request_id, start, cache_result, tracing.meta_from(request.headers))
         if body.stream:
             return StreamingResponse(
                 ctx.stream(cached, query_vec, bypass),
@@ -229,7 +229,7 @@ def create_app(gateway: Gateway | None = None) -> FastAPI:
                 headers={"Retry-After": str(decision.retry_after_s), "x-request-id": request_id},
             )
 
-        ctx = RequestContext(g, body, key_name, request_id, start, "bypass")
+        ctx = RequestContext(g, body, key_name, request_id, start, "bypass", tracing.meta_from(request.headers))
         message_id = anthropic_api.new_message_id()
         if raw.get("stream"):
             return StreamingResponse(
@@ -256,10 +256,12 @@ class RequestContext:
     """Accounting shared by the streaming and non-streaming paths."""
 
     def __init__(
-        self, g: Gateway, req: ChatRequest, key_name: str, request_id: str, start: float, cache: str
+        self, g: Gateway, req: ChatRequest, key_name: str, request_id: str, start: float, cache: str,
+        trace: dict | None = None,
     ):
         self.g, self.req, self.key_name, self.request_id = g, req, key_name, request_id
         self.start, self.cache = start, cache
+        self.trace = trace or {}  # grouping headers for tracing (X-Trace-Session / -Name / -Tags)
         self.completion_id = new_completion_id()
 
     @property
@@ -308,6 +310,7 @@ class RequestContext:
                 }
             )
         )
+        tracing.record(self.trace, self.request_id, self.req, c, latency, cost)
         return cost
 
     def finish(self, c: Completion, attempts: int) -> JSONResponse:
@@ -328,6 +331,7 @@ class RequestContext:
         log.warning(
             json.dumps({"event": "upstream_failed", "request_id": self.request_id, "errors": e.errors})
         )
+        tracing.record(self.trace, self.request_id, self.req, None, time.perf_counter() - self.start, error=str(e))
         status = e.status if 400 <= e.status < 500 else 502
         return JSONResponse(
             {"error": {"message": str(e), "type": "upstream_error"}},

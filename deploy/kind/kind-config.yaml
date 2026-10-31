@@ -7,8 +7,8 @@ name: llm-gateway
 nodes:
   - role: control-plane
     extraPortMappings:
-      - {containerPort: 30080, hostPort: 8090}   # gateway
-      - {containerPort: 30300, hostPort: 3001}   # Grafana
-      - {containerPort: 30900, hostPort: 9091}   # Prometheus
+      - {containerPort: 30080, hostPort: 8090, listenAddress: "127.0.0.1"}   # gateway
+      - {containerPort: 30300, hostPort: 3001, listenAddress: "127.0.0.1"}   # Grafana
+      - {containerPort: 30900, hostPort: 9091, listenAddress: "127.0.0.1"}   # Prometheus
   - role: worker
   - role: worker

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
+from fakeredis import FakeAsyncRedis, FakeServer
+
 from app.providers.base import Provider, ProviderError
+from app.router import Router
+from app.schemas import ChatRequest
 from tests.conftest import chat, make_config, make_providers, metric
 
 
@@ -198,3 +203,38 @@ def test_empty_answers_are_not_cached(make_client):
     client = make_client(cfg, make_providers(cfg) | {"empty": EmptyProvider()})
     chat(client, "x", model="m")
     assert chat(client, "x", model="m").headers["x-gateway-cache"] == "miss"
+
+
+def test_redis_outage_fails_open(make_client):
+    server = FakeServer()
+    server.connected = False  # every Redis command raises ConnectionError
+    client = make_client(redis=FakeAsyncRedis(server=server))
+    for _ in range(2):
+        r = chat(client, "Explain pods")
+        assert r.status_code == 200
+        assert r.headers["x-gateway-cache"] == "error"
+    ready = client.get("/readyz")
+    assert ready.status_code == 200 and ready.json()["redis"] is False
+
+
+def test_reasoning_effort_splits_the_cache(make_client):
+    client = make_client()
+    chat(client, "Explain jobs")
+    assert chat(client, "Explain jobs", reasoning_effort="high").headers["x-gateway-cache"] == "miss"
+    assert chat(client, "Explain jobs", reasoning_effort="high").headers["x-gateway-cache"] == "hit_exact"
+
+
+async def test_no_backoff_after_the_last_attempt_on_a_target(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        if s:  # the mock providers also sleep(0) for their latency
+            sleeps.append(s)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    cfg = make_config(retries={"max_attempts": 3, "backoff_base_s": 1.0})
+    router = Router(cfg, make_providers(cfg))
+    req = ChatRequest.model_validate({"model": "fallback", "messages": [{"role": "user", "content": "x"}]})
+    _, attempts = await router.complete(req)
+    assert attempts == 4  # 3 on "broken" + 1 on "mock"
+    assert sleeps == [1.0, 2.0]  # between attempts only, not before falling back

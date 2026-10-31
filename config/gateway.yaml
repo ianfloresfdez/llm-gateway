@@ -4,8 +4,14 @@ providers:
   ollama:
     type: openai_compatible
     base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
-    timeout_s: 120
+    # Agent turns send long prompts (tools + files): a local model can take minutes to read them.
+    timeout_s: ${OLLAMA_TIMEOUT_S:-600}
     extra_body: {reasoning_effort: none}   # gemma4 thinks by default; answer directly
+  ollama-reasoning:                    # Ollama models that cannot switch reasoning off (gpt-oss): keep it short
+    type: openai_compatible
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+    timeout_s: ${OLLAMA_TIMEOUT_S:-600}
+    extra_body: {reasoning_effort: low}
   embeddings:                          # CPU embedding server (Hugging Face TEI) for the semantic cache
     type: openai_compatible
     base_url: ${EMBEDDINGS_BASE_URL:-http://localhost:8081/v1}
@@ -43,6 +49,16 @@ models:
     targets:
       - {provider: anthropic, model: claude-sonnet-5-5}
       - {provider: ollama, model: "gemma4:12b"}
+  agent:
+    description: >-
+      Coding agents over /v1/messages (Claude Agent SDK, jack). Unknown claude-* names land here
+      (ANTHROPIC_FALLBACK_MODEL). Long-context local models first, hosted Claude as fallback.
+    # gpt-oss (MoE, ~3.6B active) ran an agent task 3.3x faster than gemma4 on an RX 6800
+    # (86 s vs 284 s, both correct); gemma4 stays as fallback if gpt-oss is not pulled.
+    targets:
+      - {provider: "${AGENT_LOCAL_PROVIDER:-ollama-reasoning}", model: "${AGENT_LOCAL_MODEL:-gpt-oss-64k}"}
+      - {provider: ollama, model: gemma4-64k}
+      - {provider: anthropic, model: claude-sonnet-5-5}
   demo-fallback:
     description: Flaky mock first, healthy mock second (no LLM needed)
     targets:
@@ -59,6 +75,11 @@ pricing:
   gpt-4.1-mini: {input: 0.40, output: 1.60}
   # Local models cost nothing per token; cache savings are valued at the reference model.
   "gemma4:12b": {input: 0, output: 0, reference: claude-haiku-5-5}
+  "gemma4-64k": {input: 0, output: 0, reference: claude-sonnet-5-5}
+  "gpt-oss-64k": {input: 0, output: 0, reference: claude-sonnet-5-5}
+  "qwen3-coder-64k": {input: 0, output: 0, reference: claude-sonnet-5-5}
+  "qwen3.6-64k": {input: 0, output: 0, reference: claude-sonnet-5-5}
+  "devstral-48k": {input: 0, output: 0, reference: claude-sonnet-5-5}
   mock-1: {input: 0, output: 0, reference: claude-sonnet-5-5}
   mock-2: {input: 0, output: 0, reference: claude-sonnet-5-5}
 

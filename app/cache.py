@@ -39,6 +39,8 @@ def _params(req: ChatRequest) -> dict:
         "top_p": req.top_p,
         "max_tokens": req.output_limit,
         "stop": req.stop_list(),
+        # Forwarded upstream and changes the answer, so it must split the cache too.
+        "reasoning_effort": getattr(req, "reasoning_effort", None),
     }
 
 

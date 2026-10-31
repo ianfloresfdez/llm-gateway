@@ -12,7 +12,7 @@ from app.providers.base import Provider, ProviderError, classify_status
 from app.schemas import ChatRequest, Completion
 
 # Fields we forward as-is; anything else in the request is dropped.
-_PASSTHROUGH = ("temperature", "top_p", "stop", "user", "reasoning_effort")
+_PASSTHROUGH = ("temperature", "top_p", "stop", "user", "reasoning_effort", "tools", "tool_choice")
 
 
 class OpenAICompatibleProvider(Provider):
@@ -60,22 +60,36 @@ class OpenAICompatibleProvider(Provider):
             raise ProviderError(f"{self.name}: {type(e).__name__}", retryable=True) from e
         if r.status_code >= 400:
             raise classify_status(r.status_code, f"{self.name}: HTTP {r.status_code} {r.text[:200]}")
-        return r.json()
+        try:
+            return r.json()
+        except ValueError as e:  # e.g. an HTML error page from a proxy with status 200
+            raise ProviderError(f"{self.name}: invalid JSON response", retryable=True) from e
 
     async def complete(self, req: ChatRequest, model: str) -> Completion:
         data = await self._post("/chat/completions", self._body(req, model))
-        choice = data["choices"][0]
+        try:
+            choice = data["choices"][0]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ProviderError(f"{self.name}: response without choices", retryable=True) from e
         usage = data.get("usage") or {}
+        message = choice.get("message") or {}
         return Completion(
-            content=choice["message"].get("content") or "",
+            content=message.get("content") or "",
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),
             finish_reason=choice.get("finish_reason") or "stop",
             provider=self.name,
             upstream_model=model,
+            tool_calls=message.get("tool_calls") or [],
         )
 
     async def stream(self, req: ChatRequest, model: str) -> AsyncIterator[str | Completion]:
+        if req.tools:  # tool calls arrive in fragments; ask for the whole answer instead
+            c = await self.complete(req, model)
+            if c.content:
+                yield c.content
+            yield c
+            return
         body = self._body(req, model) | {"stream": True, "stream_options": {"include_usage": True}}
         parts: list[str] = []
         usage: dict[str, Any] = {}

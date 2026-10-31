@@ -7,7 +7,7 @@ Any OpenAI client works by changing its base URL:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8090/v1", api_key="sk-team-a")
+client = OpenAI(base_url="http://localhost:8090/v1", api_key="sk-team-a")  # kind; 8080 with Compose
 client.chat.completions.create(model="local", messages=[{"role": "user", "content": "What is a Pod?"}])
 ```
 
@@ -44,7 +44,7 @@ Providers are enabled by environment variable: `ANTHROPIC_API_KEY` and `OPENAI_A
 
 ### Design decisions worth knowing
 
-- **Fail open on Redis.** If Redis is down, requests still reach the provider (no cache, no limits) and a warning is logged. The readiness probe therefore does not depend on Redis: a Redis outage should degrade the service, not pull every replica out of the load balancer at once.
+- **Fail open on Redis.** If Redis is down, requests still reach the provider (no cache, no limits) and a warning is logged. Redis calls time out after 0.5 s (`REDIS_TIMEOUT_S`), so an unreachable Redis adds latency instead of hanging requests. The readiness probe therefore does not depend on Redis: a Redis outage should degrade the service, not pull every replica out of the load balancer at once.
 - **Separate CPU embedder.** The first version asked Ollama for embeddings. On a single GPU with one loaded model, every embedding call evicted the chat model and the next completion paid a 13 s reload. The semantic cache now uses [Text Embeddings Inference](https://github.com/huggingface/text-embeddings-inference) with `BAAI/bge-small-en-v1.5` on CPU (~7 ms per query).
 - **Semantic threshold chosen from measurements, not defaults.** With bge-small, "What is a Kubernetes Pod?" vs. "What is a Kubernetes Service?" scores **0.937**, while true paraphrases of the Pod question score 0.967–0.984. A 0.92 threshold would have served the Pod answer to the Service question, so the default is **0.96**. The load test reports semantic false hits explicitly.
 - **Never cache empty answers.** `gemma4` reasons before answering; with a small `max_tokens` the whole budget went to hidden reasoning and the gateway returned (and cached) an empty string. The Ollama provider sends `reasoning_effort: none` by default and empty completions are never cached.
@@ -96,6 +96,58 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt   # bi
 ruff check . && ruff format --check . && pytest -q
 GATEWAY_CONFIG=config/gateway.yaml uvicorn app.main:app --port 8080
 ```
+
+Without a Redis on `localhost:6379` the gateway still answers (cache and limits fail open, `/readyz` reports `"redis": false`). Compose and kind publish their ports on `127.0.0.1` only.
+
+## Anthropic API and coding agents
+
+Besides the OpenAI format the gateway serves Anthropic's **`POST /v1/messages`** (plus
+`/v1/messages/count_tokens`), so clients that only speak Anthropic's wire format can use any
+provider behind it, including the local model. This is what lets
+[jack](https://github.com/ianfloresfdez/jack) run its Claude Agent SDK pipeline against a local
+model: point the SDK at the gateway the same way it points at a hosted Anthropic-compatible
+gateway.
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8080   # the Claude Agent SDK / Claude Code use this
+ANTHROPIC_AUTH_TOKEN=<gateway key>          # or any value when GATEWAY_API_KEYS is empty
+```
+
+- **Tool use is translated both ways**: `tool_use` / `tool_result` blocks become OpenAI
+  `tool_calls` / `role: tool` messages for the upstream model and back. Requests with tools are
+  never cached, since an agent loop must run again.
+- **Model names**: known aliases and `provider/model` strings are used as they are; any other
+  name (`claude-opus-5-5`, `claude-haiku-4-5`...) goes to `ANTHROPIC_FALLBACK_MODEL`, by default
+  the `agent` alias: `gemma4-64k` on Ollama (set `AGENT_LOCAL_MODEL` to change it), with hosted
+  Claude as fallback when `ANTHROPIC_API_KEY` is set.
+- **Streaming**: the answer is computed in one go and sent as Anthropic SSE events, with `ping`
+  events every 10 s so a long local prompt does not look like a dead connection. Ollama's timeout
+  is `OLLAMA_TIMEOUT_S` (600 s by default) because agent prompts carry tools and whole files.
+- Auth accepts `Authorization: Bearer` and `x-api-key`.
+
+Which local model for agents? Same task through the Claude Agent SDK (list files with Glob,
+read one, answer a question about it; ~13k-token prompts), RX 6800, Ollama on Vulkan:
+
+| Model (`agent` target) | Total | Turns | Correct |
+|---|---|---|---|
+| `gpt-oss-64k` (gpt-oss:20b, MoE, reasoning `low`) | **86 s** | 27 / 29 / 30 s | yes |
+| `gemma4-64k` (gemma4:12b, dense) | 284 s | 120 / 134 / 30 s | yes |
+| `qwen3-40k` (qwen3:14b, dense) | > 13 min, stopped | 340 / 430 s ... | - |
+
+`gpt-oss` only activates ~3.6B parameters per token, so it reads long agent prompts far faster;
+it is the default (`AGENT_LOCAL_MODEL`, provider `ollama-reasoning` because gpt-oss cannot turn
+reasoning off). Local agent runs are still much slower and less reliable than hosted models: fine
+for demos and small tickets.
+
+## Traces in Langfuse
+
+Set `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (self-hosted Langfuse or cloud) and every
+completion is sent as an OpenTelemetry span (OTLP/HTTP JSON, no SDK) that Langfuse shows as a *generation*: model,
+the system prompt head plus the last turns, the answer or tool calls, tokens, latency, cost, and errors. Uploads run
+in the background and never fail or slow a request. Clients group calls with headers: `X-Trace-Session` (jack sends
+its run id), `X-Trace-Name` (stage and ticket) and `X-Trace-Tags`. Claude Code forwards them through
+`ANTHROPIC_CUSTOM_HEADERS`. This is how a local model that loops in one stage gets diagnosed: open the run's session
+and read its last turns.
 
 ## CI/CD
 
@@ -166,7 +218,9 @@ Grafana dashboard provisioned by the chart (kube-prometheus-stack in kind). Pane
 ## Limitations and next steps
 
 - Anthropic responses are not streamed token by token (the full answer is sent as one chunk); OpenAI-compatible providers stream natively.
-- Only text content is supported; tool calls and images are not translated between provider formats.
+- Only text content is supported; tool calls and images are not translated between provider formats. Request fields the gateway does not know (`tools`, `response_format`, `n`, ...) are dropped, not rejected.
+- Auth is off when `GATEWAY_API_KEYS` is empty (the gateway logs a warning if a paid provider is enabled). With auth on, any key can still address `provider/model` directly, so it can use any model of an enabled provider, not only the aliases.
+- The cache is shared by all API keys: a semantic hit can return an answer generated for another key's similar prompt. Multi-tenant deployments should scope it per key.
 - Semantic search is a brute-force scan over the most recent 1,000 vectors per scope in Redis; beyond that, a vector index (Redis Stack, pgvector) would be needed.
 - Not included: Ingress/TLS, NetworkPolicies, Redis high availability, autoscaling on custom metrics (in-flight requests) instead of CPU, and OpenTelemetry traces.
 - Prices in `config/gateway.yaml` are examples; check each provider's pricing page before relying on cost figures.

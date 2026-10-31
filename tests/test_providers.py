@@ -83,6 +83,16 @@ async def test_openai_compatible_connection_error_is_retryable():
     assert e.value.retryable
 
 
+@pytest.mark.parametrize(
+    "response",
+    [httpx.Response(200, text="<html>bad gateway</html>"), httpx.Response(200, json={"error": "x"})],
+)
+async def test_openai_compatible_malformed_response_is_retryable(response):
+    with pytest.raises(ProviderError) as e:
+        await openai_provider(lambda r: response).complete(req(), "m")
+    assert e.value.retryable and e.value.fallback
+
+
 def test_anthropic_translation_moves_system_and_drops_sampling():
     params = to_messages_params(req(temperature=0.7, stop="END"), "claude-haiku-5-5")
     assert params["system"] == "Be brief."

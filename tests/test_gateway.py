@@ -217,6 +217,25 @@ def test_redis_outage_fails_open(make_client):
     assert ready.status_code == 200 and ready.json()["redis"] is False
 
 
+def test_redis_outage_is_skipped_until_cooldown(make_client, caplog):
+    # After the first failure the gateway stops calling Redis (each call would wait the timeout)
+    server = FakeServer()
+    server.connected = False
+    client = make_client(redis=FakeAsyncRedis(server=server))
+    gw = client.app.state.gw
+    for _ in range(4):
+        assert chat(client, "Explain pods").status_code == 200
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert [r.getMessage() for r in warnings] == ["redis unavailable (ConnectionError): skipping it for 30 s"]
+    assert not gw.limiter.guard.usable and gw.cache.guard is gw.limiter.guard
+
+    # Back after the cooldown
+    gw.limiter.guard.down_until = 0
+    server.connected = True
+    chat(client, "Explain pods")
+    assert chat(client, "Explain pods").headers["x-gateway-cache"] == "hit_exact"
+
+
 def test_reasoning_effort_splits_the_cache(make_client):
     client = make_client()
     chat(client, "Explain jobs")

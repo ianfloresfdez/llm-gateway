@@ -23,10 +23,16 @@ import numpy as np
 from redis.asyncio import Redis
 
 from app.config import CacheConfig
+from app.guard import UNREACHABLE, Guard
 from app.providers.base import Provider
 from app.schemas import ChatRequest, Completion
 
 log = logging.getLogger(__name__)
+
+
+class EmbedderDown(Exception):
+    """The embedding server failed; already recorded in embed_guard."""
+
 
 CacheResult = Literal["hit_exact", "hit_semantic", "miss", "bypass", "error"]
 PREFIX = "llmgw"
@@ -61,18 +67,26 @@ def semantic_text(req: ChatRequest) -> str:
 
 
 class ResponseCache:
-    def __init__(self, redis: Redis, cfg: CacheConfig, embedder: Provider | None = None):
+    def __init__(
+        self, redis: Redis, cfg: CacheConfig, embedder: Provider | None = None, guard: Guard | None = None
+    ):
         self.redis = redis
         self.cfg = cfg
         self.embedder = embedder
+        self.guard = guard or Guard("redis")
+        self.embed_guard = Guard("embedding server")
 
     @property
     def semantic_enabled(self) -> bool:
-        return self.cfg.mode == "semantic" and self.embedder is not None
+        return self.cfg.mode == "semantic" and self.embedder is not None and self.embed_guard.usable
 
     async def _embed(self, req: ChatRequest) -> np.ndarray:
         assert self.embedder is not None
-        [vec] = await self.embedder.embed([semantic_text(req)], self.cfg.semantic.embedding_model)
+        try:
+            [vec] = await self.embedder.embed([semantic_text(req)], self.cfg.semantic.embedding_model)
+        except Exception as e:
+            self.embed_guard.failed(e)
+            raise EmbedderDown from e
         v = np.asarray(vec, dtype=np.float32)
         return v / (np.linalg.norm(v) or 1.0)
 
@@ -80,6 +94,8 @@ class ResponseCache:
         """Returns (result, cached completion, query embedding to reuse on set())."""
         if self.cfg.mode == "off":
             return "bypass", None, None
+        if not self.guard.usable:
+            return "error", None, None
         key = exact_key(req)
         try:
             raw = await self.redis.get(f"{PREFIX}:exact:{key}")
@@ -94,6 +110,11 @@ class ResponseCache:
                 if raw:
                     return "hit_semantic", Completion(**json.loads(raw)), query
             return "miss", None, query
+        except EmbedderDown:
+            return "miss", None, None
+        except UNREACHABLE as e:
+            self.guard.failed(e)
+            return "error", None, None
         except Exception:
             log.warning("cache lookup failed", exc_info=True)
             return "error", None, None
@@ -118,7 +139,7 @@ class ResponseCache:
         return live[best][0] if scores[best] >= self.cfg.semantic.threshold else None
 
     async def set(self, req: ChatRequest, completion: Completion, query: np.ndarray | None = None) -> None:
-        if self.cfg.mode == "off" or not completion.content:
+        if self.cfg.mode == "off" or not completion.content or not self.guard.usable:
             return  # never cache an empty answer (e.g. output budget spent on reasoning)
         key = exact_key(req)
         ttl = self.cfg.ttl_s
@@ -135,5 +156,9 @@ class ResponseCache:
                 pipe.zremrangebyrank(index, 0, -(self.cfg.semantic.max_entries + 1))
                 pipe.expire(index, ttl)
                 await pipe.execute()
+        except EmbedderDown:
+            pass  # the exact entry is stored; only the semantic index misses it
+        except UNREACHABLE as e:
+            self.guard.failed(e)
         except Exception:
             log.warning("cache store failed", exc_info=True)

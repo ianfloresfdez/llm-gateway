@@ -20,6 +20,7 @@ from redis.asyncio import Redis
 from app import anthropic_api, metrics, tracing
 from app.cache import ResponseCache
 from app.config import GatewayConfig, load_api_keys, load_config
+from app.guard import Guard
 from app.pricing import actual_cost, avoided_cost
 from app.providers import Provider, build_providers
 from app.ratelimit import RateLimiter
@@ -48,12 +49,13 @@ def build_gateway(cfg: GatewayConfig, redis: Redis, providers: dict[str, Provide
     paid = sorted(n for n in providers if n in cfg.providers and cfg.providers[n].api_key_env)
     if not api_keys and paid:
         log.warning("GATEWAY_API_KEYS is empty: anyone who can reach the gateway can spend on %s", paid)
+    redis_guard = Guard("redis")  # shared: one outage, one warning, both skip it
     return Gateway(
         cfg=cfg,
         providers=providers,
         router=Router(cfg, providers),
-        cache=ResponseCache(redis, cfg.cache, embedder),
-        limiter=RateLimiter(redis),
+        cache=ResponseCache(redis, cfg.cache, embedder, redis_guard),
+        limiter=RateLimiter(redis, redis_guard),
         redis=redis,
         api_keys=api_keys,
     )

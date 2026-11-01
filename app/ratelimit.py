@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from redis.asyncio import Redis
 
 from app.config import KeyLimits
+from app.guard import UNREACHABLE, Guard
 
 log = logging.getLogger(__name__)
 
@@ -26,20 +27,26 @@ class LimitDecision:
 
 
 class RateLimiter:
-    def __init__(self, redis: Redis):
+    def __init__(self, redis: Redis, guard: Guard | None = None):
         self.redis = redis
+        self.guard = guard or Guard("redis")
 
     async def check(self, key_name: str, limits: KeyLimits) -> LimitDecision:
         now = time.time()
         minute = int(now // 60)
         day = time.strftime("%Y%m%d", time.gmtime(now))
         rpm_key = f"llmgw:rl:{key_name}:{minute}"
+        if not self.guard.usable:
+            return LimitDecision(True)
         try:
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.incr(rpm_key)
                 pipe.expire(rpm_key, 120)
                 pipe.get(f"llmgw:tok:{key_name}:{day}")
                 count, _, used = await pipe.execute()
+        except UNREACHABLE as e:
+            self.guard.failed(e)
+            return LimitDecision(True)
         except Exception:
             log.warning("rate limiter unavailable, failing open", exc_info=True)
             return LimitDecision(True)
@@ -51,7 +58,7 @@ class RateLimiter:
         return LimitDecision(True)
 
     async def record_tokens(self, key_name: str, tokens: int) -> None:
-        if tokens <= 0:
+        if tokens <= 0 or not self.guard.usable:
             return
         day = time.strftime("%Y%m%d", time.gmtime())
         key = f"llmgw:tok:{key_name}:{day}"
@@ -60,5 +67,7 @@ class RateLimiter:
                 pipe.incrby(key, tokens)
                 pipe.expire(key, 2 * 86400)
                 await pipe.execute()
+        except UNREACHABLE as e:
+            self.guard.failed(e)
         except Exception:
             log.warning("could not record token usage", exc_info=True)
